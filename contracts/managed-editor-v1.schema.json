@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://curie.orbitalmaterials.com/schemas/cad/managed-editor-v1.schema.json",
+  "title": "Curie managed CAD editor control envelope v1",
+  "description": "Control messages on an established scoped MessagePort. Binary data travels separately as transferable ArrayBuffers and is bounded by the negotiated capability limits. Server authorization is independent of this envelope.",
+  "type": "object",
+  "required": ["version", "kind", "requestId", "sessionEpoch", "designId", "payload"],
+  "properties": {
+    "version": {"type": "object", "required": ["major", "minor"], "properties": {"major": {"const": 1}, "minor": {"const": 0}}, "additionalProperties": false},
+    "kind": {"enum": ["request", "response", "event"]},
+    "requestId": {"type": "string", "minLength": 1, "maxLength": 128},
+    "sessionEpoch": {"type": "string", "minLength": 1, "maxLength": 128},
+    "designId": {"type": "string", "minLength": 1, "maxLength": 128},
+    "operationId": {"type": "string", "minLength": 1, "maxLength": 128},
+    "expectedGeneration": {"$ref": "#/$defs/generation"},
+    "payload": {"type": "object"}
+  },
+  "additionalProperties": false,
+  "$defs": {"generation": {"type": "string", "pattern": "^(0|[1-9][0-9]*)$", "maxLength": 20, "description": "Decimal unsigned 64-bit integer, at most 18446744073709551615; semantic validation must enforce the upper bound."}}
+}

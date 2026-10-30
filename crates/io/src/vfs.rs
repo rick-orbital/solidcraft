@@ -129,6 +129,27 @@ mod imp {
         let paths = WRITES.with(|w| std::mem::take(&mut *w.borrow_mut()));
         paths.into_iter().filter_map(|p| FILES.with(|f| f.borrow().get(&p).cloned()).map(|b| (p, b))).collect()
     }
+    pub fn pending_writes_prefix(prefix: &str) -> usize {
+        WRITES.with(|w| w.borrow().iter().filter(|p| p.starts_with(prefix)).count())
+    }
+
+    /// Drain only writes under a chosen prefix; other writes remain pending.
+    pub fn take_writes_prefix(prefix: &str) -> Vec<(String, Vec<u8>)> {
+        let paths = WRITES.with(|w| {
+            let mut writes = w.borrow_mut();
+            let mut selected = Vec::new();
+            writes.retain(|path| {
+                if path.starts_with(prefix) {
+                    selected.push(path.clone());
+                    false
+                } else {
+                    true
+                }
+            });
+            selected
+        });
+        paths.into_iter().filter_map(|p| FILES.with(|f| f.borrow().get(&p).cloned()).map(|b| (p, b))).collect()
+    }
     pub fn list(prefix: &str) -> Vec<(String, u64)> {
         FILES.with(|f| f.borrow().iter().filter(|(p, _)| p.starts_with(prefix)).map(|(p, b)| (p.clone(), b.len() as u64)).collect())
     }

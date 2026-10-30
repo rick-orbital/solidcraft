@@ -352,6 +352,17 @@ pub fn flush(files: &Rc<Files>) {
     }
 }
 
+/// Managed probe: deliver exports without consuming native open/save queues.
+pub fn flush_managed_downloads(files: &Rc<Files>) {
+    for (path, bytes) in vfs::take_writes_prefix(DOWNLOADS) {
+        let name = path.strip_prefix(DOWNLOADS).unwrap_or(&path);
+        if let Err(e) = download(name, &bytes) {
+            let _ = vfs::write(&path, &bytes);
+            files.say(format!("{name}: {e}"), true);
+        }
+    }
+}
+
 /// Hand `bytes` to the user as a download named `name`.
 pub fn download(name: &str, bytes: &[u8]) -> Result<(), String> {
     let doc = web_sys::window().and_then(|w| w.document()).ok_or("no document")?;

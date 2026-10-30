@@ -337,7 +337,9 @@ fn open(s: &mut Session, p: &Value) -> Result<Value> {
     // Stamped before it is read: a write while it is being read is a change too.
     let disk = solidcraft_io::design_lock::stamp(path);
     let (mut doc, saved) = solidcraft_io::read_design_file(path, s.open_preview.take()).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
-    if let Some(stem) = default_name_for(&doc.name, path) {
+    if !p.get("_probe_preserve_name").and_then(Value::as_bool).unwrap_or(false)
+        && let Some(stem) = default_name_for(&doc.name, path)
+    {
         doc.name = stem;
     }
     s.replace_design(Session::opened_at(doc, saved.as_ref(), Some(path)));

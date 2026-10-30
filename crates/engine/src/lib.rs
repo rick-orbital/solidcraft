@@ -407,6 +407,9 @@ pub struct Session {
     pub log: Vec<String>,
     /// Increments on every document change (views use it to refresh).
     pub revision: u64,
+    /// Experimental command-completion counter, not a complete document epoch.
+    pub probe_generation: u64,
+    pub probe_locked: bool,
     /// Revision increments caused only by visibility. Comparing both counters proves that
     /// every intervening increment left an editor's document and model untouched.
     visibility_revision: u64,
@@ -621,6 +624,8 @@ impl Session {
             open_preview: None,
             log: Vec::new(),
             revision: 1,
+            probe_generation: 0,
+            probe_locked: false,
             visibility_revision: 0,
             document_id: cmd::inspect::new_document_id(),
             followed: None,
@@ -671,6 +676,8 @@ impl Session {
     /// design before the batch, which is what the batch promised (#3242). The design is what a
     /// checkpoint keeps, not the replaced session's file path (docs/mcp.md).
     pub fn replace_design(&mut self, fresh: Session) {
+        let probe_generation = self.probe_generation;
+        let probe_locked = self.probe_locked;
         let auto_project = self.auto_project;
         let param_check = self.param_check;
         let easyprint_upload = self.easyprint_upload.take();
@@ -683,6 +690,8 @@ impl Session {
         let crash_journal = self.crash_journal;
         let replacements = self.replacements.wrapping_add(1);
         *self = fresh;
+        self.probe_generation = probe_generation;
+        self.probe_locked = probe_locked;
         self.crash_journal = crash_journal;
         self.auto_project = auto_project;
         self.param_check = param_check;
@@ -1210,6 +1219,9 @@ impl Session {
     /// gesture's end (`sketch.drag_end`, or whatever runs next after an abandoned gesture) brings
     /// the model up to date before anything reads it.
     pub fn execute(&mut self, id: &str, params: &Value) -> Result<Value> {
+        if self.probe_locked && !matches!(id, "document.inspect" | "document.revision" | "engine.commands") {
+            return Err(EngineError::Other("probe lock active".into()));
+        }
         let spec = find_command(id).ok_or_else(|| EngineError::UnknownCommand(id.to_string()))?;
         let host_viewport = self.render_viewport.clone();
         let host_jobs = self.render_jobs.host.clone();
@@ -1345,6 +1357,9 @@ impl Session {
                 Err(e)
             }
         };
+        if outermost && result.is_ok() && (changed || hidden) {
+            self.probe_generation = self.probe_generation.saturating_add(1);
+        }
         if let Some((before, changed, failed)) = crash_outcome {
             // Refresh and body-name pinning can copy the shared document. Remember the final
             // document, so the next command does not mistake that work for an outside edit
@@ -1465,6 +1480,8 @@ impl Session {
             saved: self.saved.clone(),
             log: Vec::new(),
             revision: self.revision,
+            probe_generation: self.probe_generation,
+            probe_locked: self.probe_locked,
             visibility_revision: self.visibility_revision,
             document_id: self.document_id.clone(),
             followed: None,
@@ -1665,6 +1682,7 @@ impl Session {
     /// Commit commands evaluated on a scratch copy without losing this session's file,
     /// saved state, view state, checkpoints or earlier undo steps.
     pub fn accept_computed(&mut self, mut computed: Session) {
+        let probe_changed = !Arc::ptr_eq(&self.doc, &computed.doc) || self.visibility != computed.visibility;
         let previous_revision = self.revision;
         // The first computed step starts from this document. Its undo must restore the view
         // at acceptance, including a body hidden while the computation was running.
@@ -1701,6 +1719,9 @@ impl Session {
         }
         for message in computed.log {
             self.echo(message);
+        }
+        if probe_changed {
+            self.probe_generation = self.probe_generation.saturating_add(1);
         }
     }
 

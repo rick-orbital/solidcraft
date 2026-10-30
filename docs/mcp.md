@@ -434,3 +434,15 @@ Parameters dialog. `record_ui.sh` records it and draws the pointer and the capti
 
 The tests in `crates/mcp/src/tests.rs` run sessions like this (box → fillet → hole, parameters,
 batch rollback, hostile arguments) and check the results only through MCP.
+
+A remote control backend may include `png` (an array of PNG bytes) in the result
+of `ui.screenshot` or `ui.render`. MCP then returns that image directly instead
+of reading the backend's path on the MCP host. An explicit screenshot `path`
+still uses the MCP host's allowed folders; malformed inline payloads are errors,
+not a reason to read a potentially stale local file. This supports browser
+virtual filesystems without changing the `screenshot` tool contract.
+
+The web app supplies inline bytes for window screenshots (up to 3 MiB, to fit
+the JSON browser transport). Use the default source or `source: "window"`.
+Offscreen `source: "model"` rendering is still unsupported in the browser;
+`grid` and `axes` options select that offscreen renderer.

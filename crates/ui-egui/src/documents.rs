@@ -222,6 +222,9 @@ pub fn moved_index(i: usize, from: usize, to: usize) -> usize {
 
 /// Make tab `i` the active design.
 pub fn switch(app: &mut SolveApp, i: usize) {
+    if app.probe_managed {
+        return;
+    }
     if app.file_picker_busy() {
         return;
     }
@@ -347,6 +350,9 @@ pub(crate) fn same_path(a: &str, b: &str) -> bool {
 
 /// Open `session` in a new tab after the active one and switch to it (`fit`: frame its model).
 pub fn open_tab(app: &mut SolveApp, session: Session) -> Result<(), String> {
+    if app.probe_managed {
+        return Err("managed design cannot be replaced".into());
+    }
     if app.docs.slots.is_empty() {
         app.docs.slots.push(None);
         app.docs.active = 0;
@@ -394,6 +400,9 @@ pub fn adopt(app: &mut SolveApp, session: Session) {
 /// takes Units of new designs (#1205): a launch starts on that empty design, so returning
 /// here used to leave it in millimetres.
 pub fn new_design(app: &mut SolveApp) {
+    if app.probe_managed {
+        return;
+    }
     if app.file_picker_busy() {
         return;
     }
@@ -412,6 +421,9 @@ pub fn new_design(app: &mut SolveApp) {
 /// Create a new tab directly; the File view chooses units before using [`new_design`].
 /// An untouched blank launch design is reused.
 pub fn new_tab(app: &mut SolveApp) {
+    if app.probe_managed {
+        return;
+    }
     if app.file_picker_busy() {
         return;
     }
@@ -431,6 +443,9 @@ pub fn new_tab(app: &mut SolveApp) {
 /// new or already showing, takes Units of new designs so a cancelled open is not millimetres
 /// when the preference says otherwise.
 pub fn prepare_open(app: &mut SolveApp) {
+    if app.probe_managed {
+        return;
+    }
     if active_is_blank(app) {
         crate::prefs::apply_new_design(app);
         return;
@@ -444,6 +459,9 @@ pub fn prepare_open(app: &mut SolveApp) {
 
 /// Close tab `i`: asks first when it has unsaved changes (`force`: close anyway).
 pub fn close(app: &mut SolveApp, i: usize, force: bool) {
+    if app.probe_managed {
+        return;
+    }
     if app.file_picker_busy() {
         return;
     }

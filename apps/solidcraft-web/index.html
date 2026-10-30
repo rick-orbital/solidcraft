@@ -39,7 +39,7 @@
   <div id="solidcraft_loading" role="status"><img src="loading-logo.svg" alt=""><span class="sr-only">Loading SolidCraft&hellip;</span></div>
   <script>
     // Offline use and updates (sw.js; written into release builds by `cargo xtask web-offline`).
-    if ("serviceWorker" in navigator) {
+    if ("serviceWorker" in navigator && !new URLSearchParams(location.search).has("managed")) {
       addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => {}));
     }
     // Install as an app: the browser's offer can come before the app runs, so it is kept here for

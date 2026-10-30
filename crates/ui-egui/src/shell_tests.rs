@@ -1163,3 +1163,64 @@ fn status_bar_stays_out_of_the_embed() {
     assert!(!crate::status_bar::shown(&h.app));
     assert!(rect_of("status:bar").is_none() && h.app.shell.status_bar.is_none());
 }
+
+#[test]
+fn gate0_probe_lock_refuses_pending_synthetic_input_and_filters_native_input() {
+    let mut h = Harness::new();
+    h.app.synthetic.push(egui::Event::Text("pending".into()));
+    assert!(h.app.probe_lock(&h.ctx).is_err());
+    h.app.synthetic.clear();
+    h.app.run("parameters.add", json!({"name":"height", "expression":"40", "unit":"mm"})).unwrap();
+    h.app.probe_lock(&h.ctx).unwrap();
+    assert!(h.app.probe_lock(&h.ctx).is_err());
+    let mut raw = egui::RawInput::default();
+    raw.events.push(egui::Event::Text("blocked".into()));
+    h.app.raw_input_hook(&mut raw);
+    assert!(raw.events.is_empty());
+    h.app.probe_locked_parameter(json!({"name":"height", "expression":"60"})).unwrap();
+    h.app.probe_unlock();
+    assert!(h.app.probe_locked_parameter(json!({"name":"height", "expression":"70"})).is_err());
+}
+
+#[test]
+fn gate0_managed_probe_refuses_native_design_replacement() {
+    let mut h = Harness::new();
+    h.app.run("solid.box", json!({"length":30,"width":20,"height":10})).unwrap();
+    let original = h.app.session.document_id.clone();
+    h.app.probe_enter_managed(&h.ctx).unwrap();
+    crate::documents::new_design(&mut h.app);
+    assert_eq!(h.app.session.document_id, original);
+    assert!(h.app.run("file.new", json!({})).is_err());
+    h.app.open_path_async("/unwanted.solidcraft");
+    assert_eq!(h.app.session.document_id, original);
+    assert!(!h.app.file_load.busy());
+}
+
+#[test]
+fn managed_force_lock_defers_queued_control_work() {
+    let mut h = Harness::new();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    h.app.control_rx = Some(receiver);
+    h.app.probe_managed = true;
+    let (request, reply) = crate::ControlRequest::new("engine.execute", json!({"command":"solid.box","params":{"length":30,"width":20,"height":10}}));
+    sender.send(request).unwrap();
+    h.app.probe_force_lock();
+    let document = h.app.session.doc.clone();
+    h.settle();
+    assert_eq!(*h.app.session.doc, *document);
+    assert!(matches!(reply.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)));
+}
+
+#[test]
+fn managed_observer_catches_direct_document_mutation_and_visibility() {
+    let mut h = Harness::new();
+    let observed = h.app.session.doc.clone();
+    let visibility = h.app.session.visibility.clone();
+    let engine_generation = h.app.session.probe_generation;
+    h.app.session.doc_mut().name = "direct-change".into();
+    assert!(!std::sync::Arc::ptr_eq(&observed, &h.app.session.doc));
+    assert_eq!(h.app.session.probe_generation, engine_generation);
+    assert_eq!(h.app.session.visibility, visibility);
+    h.app.session.visibility.hidden_bodies.push("Body1".into());
+    assert_ne!(h.app.session.visibility, visibility);
+}

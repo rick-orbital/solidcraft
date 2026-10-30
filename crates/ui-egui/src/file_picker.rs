@@ -40,6 +40,10 @@ impl SolveApp {
 
     /// Open a file of this type: the picker offers these extensions first (#1801).
     pub(crate) fn pick_open_for(&mut self, extensions: &[&str], complete: impl FnOnce(&mut SolveApp, Option<String>) + 'static) {
+        if self.probe_managed {
+            self.set_status("managed file picker unavailable in probe", true);
+            return;
+        }
         if self.file_picker_busy() {
             return;
         }

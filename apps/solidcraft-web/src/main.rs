@@ -18,6 +18,10 @@ mod files;
 mod install;
 #[cfg(target_arch = "wasm32")]
 mod linked;
+#[cfg(target_arch = "wasm32")]
+mod managed_bridge;
+#[cfg(any(target_arch = "wasm32", test))]
+mod managed_handshake;
 #[cfg(any(target_arch = "wasm32", test))]
 mod space_mouse;
 
@@ -40,6 +44,7 @@ fn query_flag(query: &str, name: &str) -> bool {
 struct Launch {
     open: Option<String>,
     embed: bool,
+    managed: bool,
 }
 
 #[cfg(any(target_arch = "wasm32", test))]
@@ -51,15 +56,19 @@ impl Launch {
             match key.as_ref() {
                 "open" if launch.open.is_none() => launch.open = Some(value.into_owned()),
                 "embed" => embed = true,
+                "managed" => launch.managed = true,
                 _ => {}
             }
         }
-        launch.embed = embed && launch.open.is_some();
+        if launch.managed {
+            launch.open = None;
+        }
+        launch.embed = !launch.managed && embed && launch.open.is_some();
         launch
     }
 
     fn persists(&self) -> bool {
-        !self.embed
+        !self.embed && !self.managed
     }
 
     fn full_app_url(&self, mut url: url::Url) -> String {
@@ -227,6 +236,7 @@ mod web {
         linked: crate::linked::Download,
         full_url: Option<String>,
         api: Api,
+        managed_bridge: Option<crate::managed_bridge::Bridge>,
         files: Rc<Files>,
         /// When the last autosave was (seconds), and the revision it holds (none stored: `None`).
         autosaved_at: f64,
@@ -647,15 +657,42 @@ mod web {
 
     impl eframe::App for Shell {
         fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+            if let Some(bridge) = &self.managed_bridge {
+                bridge.poll(&mut self.app, ctx);
+            }
             self.tick_font(ctx);
             self.app.logic(ctx);
+            self.api.poll_lock(&mut self.app, ctx, &self.files);
+            self.api.poll_generation(&self.app.session);
+            self.api.poll_snapshot(&self.app.session);
             self.api.poll();
-            self.space_mouse.logic(&mut self.app, ctx);
-            self.files_tick(ctx);
+            if !self.app.probe_is_locked() {
+                self.space_mouse.logic(&mut self.app, ctx);
+            }
+            if self.app.probe_managed || self.app.probe_is_locked() {
+                files::flush_managed_downloads(&self.files);
+            } else {
+                self.files_tick(ctx);
+            }
             UNSAVED.with(|u| u.set(solidcraft_ui_egui::documents::any_dirty(&self.app)));
             DESIGN_SHOWN.with(|d| d.set(solidcraft_ui_egui::toolbar::design_shown(&self.app)));
         }
         fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+            // Probe only: direct events, not synthetic control events or pending jobs.
+            if self.api.input_blocked() || self.app.probe_is_locked() {
+                raw.events.clear();
+                raw.dropped_files.clear();
+                raw.hovered_files.clear();
+            }
+            if self.launch.managed {
+                raw.dropped_files.clear();
+                raw.hovered_files.clear();
+                if !self.managed_bridge.as_ref().is_some_and(|bridge| bridge.editing()) {
+                    raw.events.clear();
+                }
+                self.app.raw_input_hook(raw);
+                return;
+            }
             let now = raw.time.unwrap_or_else(|| ctx.input(|i| i.time));
             if let Some(delay) = self.wheel_gestures.update(raw, now) {
                 ctx.request_repaint_after(delay);
@@ -671,7 +708,9 @@ mod web {
             self.app.raw_input_hook(raw);
         }
         fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-            self.linked.tick(&mut self.app, ui.ctx());
+            if !self.app.probe_managed && !self.app.probe_is_locked() {
+                self.linked.tick(&mut self.app, ui.ctx());
+            }
             UNSAVED.with(|u| u.set(self.launch.persists() && solidcraft_ui_egui::documents::any_dirty(&self.app)));
             if self.launch.embed {
                 ui_kit::Container::new(ui.ctx(), ui_kit::Surface::Chrome).edge("embed_header", ui_kit::Edge::Top).show(ui, |ui| {
@@ -778,7 +817,7 @@ mod web {
                         }
                         let (panel, opener, saver, shown) = (files.clone(), files.clone(), files.clone(), files.clone());
                         let (restorable, restorer) = (files.clone(), files.clone());
-                        let services = if launch.embed { Services::default() } else { Services {
+                        let services = if launch.embed || launch.managed { Services::default() } else { Services {
                             // Open shows the browser's open dialog for a design where it has one
                             // (the file keeps its handle, so Save writes back to it), else the
                             // browser's files window. A command that reads another kind of file
@@ -829,7 +868,7 @@ mod web {
                             // eframe's web painter has no stencil buffer.
                             app.set_wgpu(rs, DEPTH_BITS, 0, 1);
                         }
-                        if launch.open.is_none() && crate::query_flag(&query(), "sample") {
+                        if !launch.managed && launch.open.is_none() && crate::query_flag(&query(), "sample") {
                             if let Err(e) = app.session.run_script(&solidcraft_engine::sample::script()) {
                                 app.set_status(format!("sample: {e}"), true);
                             }
@@ -843,7 +882,12 @@ mod web {
                             let rev = app.session.revision;
                             app.home.show(rev);
                         }
-                        let api = Api::install(sender, cc.egui_ctx.clone()).map_err(|e| format!("SolidCraft browser API: {e:?}"))?;
+                        if launch.managed {
+                            app.probe_managed = true;
+                            app.probe_lock(&cc.egui_ctx).map_err(|e| format!("managed editor unavailable: {e}"))?;
+                        }
+                        let managed_bridge = launch.managed.then(|| crate::managed_bridge::Bridge::start(cc.egui_ctx.clone()));
+                        let api = Api::install(sender, cc.egui_ctx.clone(), !launch.managed).map_err(|e| format!("SolidCraft browser API: {e:?}"))?;
                         let font_language = app.preferences.language.clone();
                         let linked = crate::linked::Download::start(launch.open.as_deref(), &cc.egui_ctx);
                         let full_url = window.location().href().ok().and_then(|value| url::Url::parse(&value).ok()).map(|url| launch.full_app_url(url));
@@ -853,6 +897,7 @@ mod web {
                             linked,
                             full_url,
                             api,
+                            managed_bridge,
                             files,
                             autosaved_at: f64::NEG_INFINITY,
                             autosaved: None,
@@ -896,7 +941,54 @@ mod tests {
     use super::*;
 
     #[test]
+    fn managed_handshake_is_exact_origin_single_use_and_fail_closed() {
+        use crate::managed_handshake::Policy;
+        use serde_json::json;
+        assert!(Policy::from_config("{}").is_err());
+        assert!(Policy::from_config(r#"{"allowedParentOrigins":["*"]}"#).is_err());
+        assert!(Policy::from_config(r#"{"allowedParentOrigins":["https://example.org/path"]}"#).is_err());
+        let mut p = Policy::from_config(r#"{"allowedParentOrigins":["https://example.org"]}"#).unwrap();
+        let init = json!({"type":"curie.cad.init", "version":{"major":1,"minor":0},
+            "nonce":"0123456789abcdefghijkl", "designId":"design", "sessionEpoch":"epoch"});
+        assert!(p.accept("https://evil.example", true, 1, &init).is_err());
+        assert!(p.accept("https://example.org", false, 1, &init).is_err());
+        assert!(p.accept("https://example.org", true, 0, &init).is_err());
+        assert!(p.accept("https://example.org", true, 2, &init).is_err());
+        let mut invalid = init.clone();
+        invalid["version"]["major"] = json!(2);
+        assert!(p.accept("https://example.org", true, 1, &invalid).is_err());
+        invalid = init.clone();
+        invalid["nonce"] = json!("short");
+        assert!(p.accept("https://example.org", true, 1, &invalid).is_err());
+        assert!(p.accept("https://example.org", true, 1, &init).is_ok());
+        assert!(p.accept("https://example.org", true, 1, &init).is_err());
+    }
+
+    #[test]
+    fn managed_channel_rejects_malformed_or_wrong_session_envelopes() {
+        use crate::managed_handshake::valid_request;
+        use serde_json::json;
+        let request = json!({"version":{"major":1,"minor":0}, "kind":"request", "requestId":"r1",
+            "sessionEpoch":"e1", "designId":"d1", "payload":{}});
+        assert!(valid_request(&request, "d1", "e1"));
+        assert!(!valid_request(&request, "other", "e1"));
+        assert!(!valid_request(&request, "d1", "other"));
+        let mut invalid = request.clone();
+        invalid["expectedGeneration"] = json!("01");
+        assert!(!valid_request(&invalid, "d1", "e1"));
+        invalid = request.clone();
+        invalid["extra"] = json!(true);
+        assert!(!valid_request(&invalid, "d1", "e1"));
+        invalid = request.clone();
+        invalid["payload"] = json!(null);
+        assert!(!valid_request(&invalid, "d1", "e1"));
+    }
+
+    #[test]
     fn link_query_decodes_once_and_embed_disables_persistence() {
+        let managed = Launch::parse("?managed&embed&open=https%3A%2F%2Fexample.org%2Fpart.solidcraft&sample");
+        assert!(managed.managed);
+        assert!(!managed.embed && managed.open.is_none() && !managed.persists());
         assert!(!query_flag("?open=https://example.org/webgl?sample", "webgl"));
         assert!(!query_flag("?open=https://example.org/webgl?sample", "sample"));
         assert!(query_flag("?embed&webgl", "webgl"));

@@ -632,6 +632,8 @@ pub struct SolveApp {
     pub synthetic: Vec<egui::Event>,
     /// The modifiers of the synthetic press in progress (a Ctrl-drag keeps Ctrl while it moves).
     pub synthetic_mods: egui::Modifiers,
+    pub probe_managed: bool,
+    probe_locked: bool,
     control_rx: Option<Receiver<ControlRequest>>,
     /// Control requests that change the design, held while a file loads or an agent's design
     /// change computes.
@@ -794,6 +796,8 @@ impl SolveApp {
             frame_rate: frame_rate::FrameRate::default(),
             synthetic: Vec::new(),
             synthetic_mods: egui::Modifiers::default(),
+            probe_managed: false,
+            probe_locked: false,
             control_rx: None,
             agent_chat: Default::default(),
             ai_connect: Default::default(),
@@ -1034,8 +1038,113 @@ impl SolveApp {
         self
     }
 
+    /// Experimental Gate 0 lock. Only a quiescent UI can be locked.
+    pub fn probe_lock(&mut self, ctx: &egui::Context) -> Result<(), &'static str> {
+        if self.probe_locked {
+            return Err("already locked");
+        }
+        // Drain at most one request into the existing ordered queue and refuse acquisition.
+        // A later acquisition can succeed only after all pre-existing requests are processed.
+        if let Some(req) = self.control_rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            self.control_held.push_back(req);
+            return Err("control requests pending");
+        }
+        if self.file_load.busy()
+            || self.file_picker.is_some()
+            || self.saving.is_some()
+            || self.control_job.is_some()
+            || self.agent.busy()
+            || self.edit_in_place.refreshing()
+            || self.applying.is_some()
+            || self.delete_check.is_some()
+            || self.deferred.is_some()
+            || !self.deferred_queue.is_empty()
+            || self.timeline_playback.is_some()
+            || !self.synthetic.is_empty()
+            || !self.control_held.is_empty()
+            || self.tool.is_some()
+            || self.dialog.is_some()
+            || self.params.is_some()
+            || self.session.active_sketch.is_some()
+            || ctx.input(|i| i.pointer.any_down() || !i.keys_down.is_empty())
+        {
+            return Err("editor not quiescent");
+        }
+        self.probe_locked = true;
+        self.session.probe_locked = true;
+        Ok(())
+    }
+
+    /// Enter a narrow managed mode only after current work is quiescent.
+    pub fn probe_enter_managed(&mut self, ctx: &egui::Context) -> Result<(), &'static str> {
+        self.probe_lock(ctx)?;
+        self.probe_managed = true;
+        self.probe_unlock();
+        Ok(())
+    }
+
+    /// Release the experimental lock after a known synchronous result.
+    pub fn probe_unlock(&mut self) {
+        self.probe_locked = false;
+        self.session.probe_locked = false;
+    }
+    /// Immediately fence new edits on loss of the managed lease. Pending work is
+    /// not claimed to be rolled back; recovery must use a new session.
+    pub fn probe_force_lock(&mut self) {
+        self.probe_locked = true;
+        self.session.probe_locked = true;
+    }
+
+    pub fn probe_is_locked(&self) -> bool {
+        self.probe_locked
+    }
+
+    /// One narrow owner operation; every other command remains excluded in this probe.
+    pub fn probe_locked_parameter(&mut self, params: Value) -> Result<Value, String> {
+        if !self.probe_locked {
+            return Err("lock required".into());
+        }
+        self.probe_locked = false;
+        self.session.probe_locked = false;
+        let result = self.run("parameters.change", params);
+        self.session.probe_locked = true;
+        self.probe_locked = true;
+        result
+    }
+
+    /// Probe-only synchronous STEP import into the locked design.
+    pub fn probe_locked_step(&mut self) -> Result<Value, String> {
+        if !self.probe_locked {
+            return Err("lock required".into());
+        }
+        self.probe_locked = false;
+        self.session.probe_locked = false;
+        let result = self.run("file.insert_step", json!({"path":"/probe/import.step"}));
+        self.session.probe_locked = true;
+        self.probe_locked = true;
+        result
+    }
+
     /// Run a command programmatically (JSON parameters, no dialogs).
     pub fn run(&mut self, id: &str, params: Value) -> Result<Value, String> {
+        if self.probe_locked {
+            return Err("probe lock active".into());
+        }
+        if self.probe_managed
+            && matches!(
+                id,
+                "file.new"
+                    | "doc.open"
+                    | "doc.recover"
+                    | "component.insert_design"
+                    | "component.update_links"
+                    | "component.relink"
+                    | "component.extract"
+                    | "component.replace_with_link"
+            )
+        {
+            return Err("managed design cannot be replaced".into());
+        }
         if self.file_load.busy() || self.file_picker.is_some() || self.saving.is_some() {
             return Err("a file operation is in progress".into());
         }
@@ -2052,6 +2161,10 @@ impl SolveApp {
     }
 
     pub fn open_path(&mut self, path: &str) {
+        if self.probe_managed {
+            self.set_status("managed design cannot be replaced", true);
+            return;
+        }
         match documents::reuse_path(self, path) {
             Ok(true) => return,
             Err(e) => {
@@ -2069,14 +2182,26 @@ impl SolveApp {
     }
 
     pub fn open_path_async(&mut self, path: &str) {
+        if self.probe_managed {
+            self.set_status("managed design cannot be replaced", true);
+            return;
+        }
         file_load::begin(self, path, false);
     }
     pub fn insert_path_async(&mut self, path: &str) {
+        if self.probe_managed || self.probe_locked {
+            self.set_status("probe file import unavailable", true);
+            return;
+        }
         file_load::begin(self, path, true);
     }
 
     /// Insert CAD bodies, meshes or sketch drawing geometry into the current design.
     pub fn insert_path(&mut self, path: &str) {
+        if self.probe_managed || self.probe_locked {
+            self.set_status("probe file import unavailable", true);
+            return;
+        }
         let cmd = if solidcraft_engine::io::is_point_cloud_path(path) { "pointcloud.insert" } else { file_load::insert_command(path) };
         let before: Vec<String> = self.session.world_state().bodies.iter().map(|b| b.name.clone()).collect();
         if let Ok(r) = self.run(cmd, json!({ "path": path })) {
@@ -2091,6 +2216,10 @@ impl SolveApp {
     /// A dropped CAD, mesh, drawing or point cloud (PLY, XYZ, PTS) file joins a design that has
     /// features or point clouds; otherwise it opens.
     pub fn drop_path(&mut self, path: &str) {
+        if self.probe_managed {
+            self.set_status("managed file import unavailable in probe", true);
+            return;
+        }
         let import = solidcraft_engine::io::is_step_path(path)
             || solidcraft_engine::io::is_mesh_path(path)
             || solidcraft_engine::io::is_point_cloud_path(path)
@@ -2336,9 +2465,11 @@ impl SolveApp {
         easyprint_ui::tick(self, ctx);
         render_workspace::sync_backend(self);
         render_workspace::tick(self, ctx);
-        file_load::tick(self, ctx);
+        if !self.probe_managed || !self.probe_locked {
+            file_load::tick(self, ctx);
+            edit_in_place::tick(self);
+        }
         save_job::tick(self, false);
-        edit_in_place::tick(self);
         let typing = ctx.egui_wants_keyboard_input();
         if ctx.input(|i| i.pointer.button_clicked(egui::PointerButton::Extra1) || (i.key_pressed(egui::Key::BrowserBack) && !typing)) {
             edit_in_place::back(self);
@@ -2368,8 +2499,10 @@ impl SolveApp {
             self.set_up_axis(self.ui.up_axis);
         }
         self.step_view_animation(ctx);
-        self.poll_control_jobs(ctx);
-        self.drain_control(ctx);
+        if !self.probe_managed || !self.probe_locked {
+            self.poll_control_jobs(ctx);
+            self.drain_control(ctx);
+        }
         self.follow_view_request(true);
         agent_cursor::step(self, ctx);
         if !self.synthetic.is_empty() {
@@ -2408,6 +2541,12 @@ impl SolveApp {
     /// The frame's input before the app reads it: synthetic events, then what is typed while a
     /// capture hides the report waits for it (the control channel's typing too).
     pub fn raw_input_hook(&mut self, raw: &mut egui::RawInput) {
+        if self.probe_locked {
+            raw.events.clear();
+            raw.dropped_files.clear();
+            raw.hovered_files.clear();
+            return;
+        }
         self.synthetic_input(raw);
         issue_report::hold_input(self, raw);
     }
@@ -2720,6 +2859,31 @@ impl SolveApp {
                 } else {
                     let _ = req.reply.send(json!({"ok": false, "error": "a file operation is in progress"}));
                 }
+                continue;
+            }
+            let command = req.params.get("command").or_else(|| req.params.get("id")).and_then(Value::as_str);
+            if self.probe_managed
+                && (matches!(req.method.as_str(), "engine.script" | "engine.batch" | "ui.file" | "ui.home")
+                    || (matches!(req.method.as_str(), "engine.execute" | "command")
+                        && matches!(
+                            command,
+                            Some(
+                                "file.new"
+                                    | "doc.open"
+                                    | "doc.recover"
+                                    | "component.insert_design"
+                                    | "component.update_links"
+                                    | "component.relink"
+                                    | "component.extract"
+                                    | "component.replace_with_link"
+                            )
+                        )))
+            {
+                let _ = req.reply.send(json!({"ok": false, "error": "managed design cannot be replaced"}));
+                continue;
+            }
+            if self.probe_locked && !matches!(req.method.as_str(), "document.inspect" | "document.revision" | "ui.inspect") {
+                let _ = req.reply.send(json!({"ok": false, "error": "probe lock active"}));
                 continue;
             }
             req.started.store(true, std::sync::atomic::Ordering::Relaxed);

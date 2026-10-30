@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://curie.orbitalmaterials.com/schemas/cad/managed-editor-handshake-v1.schema.json",
+  "title": "Managed CAD editor handshake v1",
+  "description": "Init is sent by the parent to the exact editor origin with exactly one transferred MessagePort; ready is returned on that port. The editor validates parent source and its runtime allowed-origin list. Nonce is fresh cryptographically random base64url encoding of at least 128 bits.",
+  "type": "object",
+  "required": ["type", "version", "nonce", "designId", "sessionEpoch"],
+  "properties": {
+    "type": {"enum": ["curie.cad.init", "curie.cad.ready"]},
+    "version": {"type": "object", "required": ["major", "minor"], "properties": {"major": {"const": 1}, "minor": {"const": 0}}, "additionalProperties": false},
+    "nonce": {"type": "string", "minLength": 22, "maxLength": 128, "pattern": "^[A-Za-z0-9_-]+$"},
+    "designId": {"type": "string", "minLength": 1, "maxLength": 128},
+    "sessionEpoch": {"type": "string", "minLength": 1, "maxLength": 128}
+  },
+  "additionalProperties": false
+}

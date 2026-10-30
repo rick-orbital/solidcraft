@@ -36,6 +36,9 @@ web-sys = { version = "0.3", features = [
     "FileSystemHandle", "FileSystemDirectoryHandle", "FileSystemFileHandle", "FileSystemGetFileOptions", "FileSystemWritableFileStream",
     "WritableStream", "File", "FileList", "Blob", "BlobPropertyBag", "Url", "HtmlAnchorElement", "HtmlInputElement", "Storage",
     "IdbFactory", "IdbDatabase", "IdbObjectStore", "IdbOpenDbRequest", "IdbRequest", "IdbTransaction", "IdbTransactionMode",
-    "Headers", "ReadableStream", "ReadableStreamDefaultReader",
-    "BeforeUnloadEvent", "Event", "EventTarget", "KeyboardEvent", "Response", "FormData", "RequestInit", "MediaQueryList", "Gamepad", "Performance",
+    "Headers", "RequestCache", "RequestCredentials", "RequestMode", "RequestRedirect", "ReadableStream", "ReadableStreamDefaultReader",
+    "BeforeUnloadEvent", "Event", "EventTarget", "MessageEvent", "MessagePort", "KeyboardEvent", "Response", "FormData", "RequestInit", "MediaQueryList", "Gamepad", "Performance",
 ] }
+
+[dev-dependencies]
+serde_json = { workspace = true }

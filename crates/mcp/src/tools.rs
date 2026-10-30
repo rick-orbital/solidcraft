@@ -1091,11 +1091,32 @@ fn capture(b: &mut dyn Backend, a: &Map<String, Value>) -> Result<(Vec<u8>, Valu
     } else {
         (render(b)?, "model")
     };
-    let read = vfs::read(&path, MAX_IMAGE_BYTES).map_err(|e| format!("{path}: {e} (is the app on another machine?)"));
-    if keep.is_none() {
-        let _ = vfs::remove(&path);
-    }
-    let png = read?;
+    // Browser/remote backends can return the picture in-band: their virtual
+    // filesystem is not the MCP host's filesystem. Never fall back to a stale
+    // local file when an inline payload is present but malformed.
+    let png = if let Some(value) = info.get("png") {
+        let values = value.as_array().ok_or("screenshot: invalid inline PNG")?;
+        if values.len() > MAX_IMAGE_BYTES {
+            return Err("screenshot: inline PNG exceeds the image limit".into());
+        }
+        let bytes: Vec<u8> = values
+            .iter()
+            .map(|v| v.as_u64().and_then(|n| u8::try_from(n).ok()).ok_or("screenshot: invalid inline PNG byte"))
+            .collect::<Result<_, _>>()?;
+        if !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+            return Err("screenshot: invalid inline PNG signature".into());
+        }
+        if keep.is_some() {
+            vfs::write(&path, &bytes).map_err(|e| e.to_string())?;
+        }
+        bytes
+    } else {
+        let read = vfs::read(&path, MAX_IMAGE_BYTES).map_err(|e| format!("{path}: {e} (is the app on another machine?)"));
+        if keep.is_none() {
+            let _ = vfs::remove(&path);
+        }
+        read?
+    };
     let (w, h) = match source {
         "model" => (json!(size("width", 960)), json!(size("height", 600))),
         _ => (info.get("width").cloned().unwrap_or(Value::Null), info.get("height").cloned().unwrap_or(Value::Null)),

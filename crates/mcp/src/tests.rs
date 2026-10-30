@@ -2371,3 +2371,41 @@ fn plain_headless_adds_no_notice() {
     let r = raw_tool(&mut s, "list_commands", json!({}));
     assert_eq!(r["result"]["content"].as_array().unwrap().len(), 1);
 }
+
+#[test]
+fn screenshots_accept_inline_png_from_browser_without_a_shared_file() {
+    struct Browser {
+        png: Value,
+    }
+    impl crate::backend::Backend for Browser {
+        fn call(&mut self, method: &str, _: Value) -> Result<Value, String> {
+            assert_eq!(method, "ui.screenshot");
+            Ok(json!({"png": self.png, "width": 1, "height": 1}))
+        }
+        fn has_ui(&self) -> bool {
+            true
+        }
+        fn describe(&self) -> String {
+            "browser".into()
+        }
+    }
+    let png = b"\x89PNG\r\n\x1a\n".to_vec();
+    let mut browser = Browser { png: json!(png) };
+    let result = crate::tools::call_tool(&mut browser, "screenshot", &json!({}));
+    assert_ne!(result["isError"], true, "{result}");
+    assert_eq!(result["content"][0]["type"], "image");
+    assert_eq!(result["content"][0]["data"], "iVBORw0KGgo=");
+    let root = std::env::temp_dir().join(format!("inline-shot-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("saved.png");
+    let result = crate::tools::call_tool(&mut browser, "screenshot", &json!({"path":path}));
+    assert_ne!(result["isError"], true, "{result}");
+    assert_eq!(std::fs::read(&path).unwrap(), png);
+    // A malformed response must not read the prior successful capture.
+    for bad in [json!("not bytes"), json!([256]), json!([-1]), json!([1.5]), json!([0, 1, 2])] {
+        browser.png = bad;
+        let result = crate::tools::call_tool(&mut browser, "screenshot", &json!({"path":path}));
+        assert_eq!(result["isError"], true, "{result}");
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}

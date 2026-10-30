@@ -1228,7 +1228,21 @@ pub fn save_screenshot(image: &egui::ColorImage, path: Option<&str>) -> Value {
     let [w, h] = image.size;
     let path = path.map(str::to_string).unwrap_or_else(|| vfs::temp_dir().join("solidcraft-shot.png").to_string_lossy().to_string());
     match write_screenshot(image, &path) {
-        Ok(()) => json!({"ok": true, "result": {"path": path, "width": w, "height": h}}),
+        Ok(()) => {
+            let result = json!({"path": path, "width": w, "height": h});
+            // The MCP host cannot read the browser's virtual filesystem. Return
+            // the actual native capture, not a second canvas/swapchain capture.
+            #[cfg(target_arch = "wasm32")]
+            let result = match vfs::read(&path, 3 * 1024 * 1024) {
+                Ok(png) => {
+                    let mut result = result;
+                    result["png"] = json!(png);
+                    result
+                }
+                Err(e) => return json!({"ok": false, "error": format!("screenshot transfer: {e}")}),
+            };
+            json!({"ok": true, "result": result})
+        }
         Err(e) => json!({"ok": false, "error": e}),
     }
 }

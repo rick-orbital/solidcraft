@@ -673,3 +673,28 @@ fn cancelling_a_step_open_releases_the_slot_before_the_worker_returns() {
     assert_eq!(fingerprint(&w.app.session), fingerprint(&expected));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn managed_force_lock_defers_released_file_worker() {
+    let dir = scratch("managed-force-lock");
+    let path = large_design(&dir, 0);
+    let mut w = Win::new();
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    w.app.file_load.worker_gate = Some((started_tx, release_rx));
+    w.app.open_path_async(&path);
+    started_rx.recv_timeout(std::time::Duration::from_secs(60)).expect("file worker started");
+    w.app.probe_managed = true;
+    w.app.probe_force_lock();
+    let doc = w.app.session.doc.clone();
+    let document_id = w.app.session.document_id.clone();
+    release_tx.send(()).unwrap();
+    for _ in 0..40 {
+        w.frame(vec![]);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(*w.app.session.doc, *doc);
+    assert_eq!(w.app.session.document_id, document_id);
+    assert!(w.app.file_load.busy(), "released result is held, not adopted while fenced");
+    let _ = std::fs::remove_dir_all(dir);
+}
